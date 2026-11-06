@@ -75,6 +75,7 @@ void printUsage() {
         "  --verbose        输出进度\n"
         "  --list           只打印硬件检测结果后退出\n"
         "  --bench [秒]     GPU 压测：扫 keys-per-item 甜点位 + 各尾号规则吞吐\n"
+        "  --cpubench [秒]  CPU 吞吐压测（默认 5s，可跟 --threads N）\n"
         "  --profile [秒]   GPU 内核逐阶段耗时占比\n"
         "  --gputest        GPU 内核逐项对照 CPU\n"
         "  --selftest / --hashtest / --matchtest   地址算法 / 哈希 / 命中规则 自检\n"
@@ -159,21 +160,41 @@ std::string keysPerSec(double r) { return groupThousands(static_cast<uint64_t>(r
 }  // namespace
 
 int selftest() {
-    // privkey = 0x00..01 的已知 TRON 地址
-    unsigned char sk[32] = {0};
-    sk[31] = 1;
+    struct Vec {
+        const char* label;
+        unsigned char sk[32];
+        const char* expect;
+    };
+    Vec cases[] = {
+        {"privkey=1", {0}, "TMVQGm1qAQYVdetCeGRRkTWYYrLXuHK2HC"},
+        {"privkey=2", {0}, "TDvSsdrNM5eeXNL3czpa6AxLDHZA9nwe9K"},
+    };
+    cases[0].sk[31] = 1;
+    cases[1].sk[31] = 2;
+
     secp256k1_context* c = secp256k1_context_create(SECP256K1_CONTEXT_NONE);
-    secp256k1_pubkey pub;
-    secp256k1_ec_pubkey_create(c, &pub, sk);
-    unsigned char out[65];
-    size_t len = 65;
-    secp256k1_ec_pubkey_serialize(c, out, &len, &pub, SECP256K1_EC_UNCOMPRESSED);
+    int fails = 0;
+    for (const auto& v : cases) {
+        secp256k1_pubkey pub;
+        if (!secp256k1_ec_pubkey_create(c, &pub, v.sk)) {
+            std::cout << "  FAIL " << v.label << " (invalid seckey)\n";
+            ++fails;
+            continue;
+        }
+        unsigned char out[65];
+        size_t len = 65;
+        secp256k1_ec_pubkey_serialize(c, out, &len, &pub, SECP256K1_EC_UNCOMPRESSED);
+        std::string addr = tronAddressFromPubXY(out + 1);
+        bool ok = addr == v.expect;
+        std::cout << (ok ? "  OK  " : "  FAIL") << "  " << v.label << " -> " << addr << "\n";
+        if (!ok) {
+            std::cout << "        expect " << v.expect << "\n";
+            ++fails;
+        }
+    }
     secp256k1_context_destroy(c);
-    std::string addr = tronAddressFromPubXY(out + 1);
-    std::cout << "privkey=1 -> " << addr << "\n";
-    const std::string expect = "TMVQGm1qAQYVdetCeGRRkTWYYrLXuHK2HC";
-    std::cout << (addr == expect ? "SELFTEST OK\n" : "SELFTEST MISMATCH (expected " + expect + ")\n");
-    return addr == expect ? 0 : 1;
+    std::cout << (fails ? std::to_string(fails) + " 个地址向量失败\n" : "SELFTEST OK\n");
+    return fails ? 1 : 0;
 }
 
 int hashtest();
@@ -197,6 +218,13 @@ int matchtest() {
         {"Txxxxxxxxxxxxxxxxxxxxxxxxxx9abcd", 5, false, ""},      // 数字跨字母
         {"TxxxxxxxxxxxxxxxxxxxxxxxxxxxFGHJ", 5, false, ""},      // 跳过缺失的 I（大写）
         {"Txxxxxxxxxxxxxxxxxxxxxxxxxxaaaa5", 5, false, ""},      // 只有 4 位相同
+        {"TxxxxxxxxxxxxxxxxxxxxxxxxxxAAAAA", 6, false, ""},      // minLen 6 时 5 位相同不够
+        {"Txxxxxxxxxxxxxxxxxxxxxxxxxx11111", 5, true,  "相同"},
+        {"Txxxxxxxxxxxxxxxxxxxxxxxxxx88888", 5, true,  "相同"},
+        {"Txxxxxxxxxxxxxxxxxxxxxxxxxx23456", 5, true,  "连续"},
+        {"Txxxxxxxxxxxxxxxxxxxxxxxxxxstuvw", 5, true,  "连续"},
+        {"Txxxxxxxxxxxxxxxxxxxxxxxxxx23456", 6, false, ""},      // 5 位连续，minLen 6
+        {"T123456789012345678901234567890", 5, false, ""},       // 中间模式不算（只看结尾）
     };
     int fails = 0;
     for (const auto& c : cases) {
@@ -220,6 +248,26 @@ void gpuSetKeysPerItem(uint32_t n);
 void gpuSetEcWindow(uint32_t w);
 void gpuSetMontN(uint32_t n);
 
+int cpuBenchCli(double secs, unsigned int threads) {
+    if (secs <= 0) secs = 5.0;
+    HardwareReport hw = detectHardware();
+    BackendInfo bi = makeCpuBackend()->info();
+    unsigned t = threads ? threads : hw.cpu.logicalCores;
+    if (t == 0) t = 4;
+
+    std::cout << "\n== CPU Benchmark ==\n"
+              << "CPU     : " << bi.title << "\n";
+    for (const auto& l : bi.lines) std::cout << "          " << l << "\n";
+    std::cout << "Threads : " << t << " (压测用)\n"
+              << "Warmup  : " << secs * 0.3 << " s\n"
+              << "Measure : " << secs << " s\n\n";
+
+    cpuTimedBenchmark(secs * 0.3, threads);
+    double rate = cpuTimedBenchmark(secs, threads);
+    std::cout << "Throughput: " << keysPerSec(rate) << " (" << humanRate(rate) << ")\n";
+    return 0;
+}
+
 int main(int argc, char** argv) {
     consoleInit();
     for (int i = 1; i < argc; ++i) {
@@ -238,6 +286,19 @@ int main(int argc, char** argv) {
             double secs = (i + 1 < argc) ? std::atof(argv[i + 1]) : 2.0;
             if (secs <= 0) secs = 2.0;
             return a == "--profile" ? gpuProfile(hw.gpus[0], secs) : gpuBench(hw.gpus[0], secs);
+        }
+        if (a == "--cpubench") {
+            double secs = 5.0;
+            if (i + 1 < argc && argv[i + 1][0] != '-') {
+                secs = std::atof(argv[++i]);
+            }
+            unsigned int threads = 0;
+            for (int j = i + 1; j < argc; ++j) {
+                if (std::string(argv[j]) == "--threads" && j + 1 < argc) {
+                    threads = static_cast<unsigned int>(std::stoul(argv[++j]));
+                }
+            }
+            return cpuBenchCli(secs, threads);
         }
     }
 

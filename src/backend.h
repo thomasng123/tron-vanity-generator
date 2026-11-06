@@ -54,4 +54,6 @@ public:
 
 struct GpuDevice;  // hwdetect.h
 std::unique_ptr<Backend> makeCpuBackend();
+// CPU 压测（threads=0 表示用逻辑核数）；不含地址匹配回调，测完整 secp256k1+地址流水线
+double cpuTimedBenchmark(double seconds, unsigned int threads = 0);
 std::unique_ptr<Backend> makeGpuBackend(const GpuDevice& dev);

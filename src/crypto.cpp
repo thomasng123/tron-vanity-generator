@@ -152,12 +152,31 @@ std::string tronAddressFromPubXY(const unsigned char pubXY[64]) {
 }
 
 int hashtest() {
+    int fails = 0;
+    auto check = [&](const char* label, const std::string& got, const char* expect) {
+        bool ok = got == expect;
+        std::printf("%s  %s\n", ok ? "  OK  " : "  FAIL", label);
+        std::printf("        got    = %s\n", got.c_str());
+        if (!ok) {
+            std::printf("        expect = %s\n", expect);
+            ++fails;
+        }
+    };
+
     unsigned char h[32];
     sha256(reinterpret_cast<const unsigned char*>("abc"), 3, h);
-    std::printf("sha256(abc)  = %s\n", bytesToHexUpper(h, 32).c_str());
-    std::printf("  expect     = BA7816BF8F01CFEA414140DE5DAE2223B00361A396177A9CB410FF61F20015AD\n");
+    check("sha256(\"abc\")", bytesToHexUpper(h, 32),
+          "BA7816BF8F01CFEA414140DE5DAE2223B00361A396177A9CB410FF61F20015AD");
+
     keccak256(reinterpret_cast<const unsigned char*>(""), 0, h);
-    std::printf("keccak256()  = %s\n", bytesToHexUpper(h, 32).c_str());
-    std::printf("  expect     = C5D2460186F7233C927E7DB2DCC703C0E500B653CA82273B7BFAD8045D85A470\n");
-    return 0;
+    check("keccak256(\"\")", bytesToHexUpper(h, 32),
+          "C5D2460186F7233C927E7DB2DCC703C0E500B653CA82273B7BFAD8045D85A470");
+
+    const unsigned char keccakMsg[] = {0x01, 0x02, 0x03};
+    keccak256(keccakMsg, 3, h);
+    check("keccak256(010203)", bytesToHexUpper(h, 32),
+          "F1885EDA54B7A053318CD41E2093220DAB15D65381B1157A3633A83BFD5C9239");
+
+    std::printf(fails ? "%d 个哈希向量失败\n" : "HASHTEST OK\n", fails);
+    return fails ? 1 : 0;
 }

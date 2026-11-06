@@ -104,9 +104,11 @@ public:
         return bi;
     }
 
-    double benchmark(double seconds) override {
+    double benchmark(double seconds) override { return timedBenchmark(seconds, 0); }
+
+    double timedBenchmark(double seconds, unsigned int threads) {
         RunState st;
-        unsigned int t = std::thread::hardware_concurrency();
+        unsigned int t = threads ? threads : std::thread::hardware_concurrency();
         if (t == 0) t = 4;
         std::vector<std::thread> pool;
         std::vector<uint64_t> counts(t, 0);
@@ -138,4 +140,9 @@ public:
 
 std::unique_ptr<Backend> makeCpuBackend() {
     return std::make_unique<CpuBackend>();
+}
+
+double cpuTimedBenchmark(double seconds, unsigned int threads) {
+    CpuBackend b;
+    return b.timedBenchmark(seconds, threads);
 }
