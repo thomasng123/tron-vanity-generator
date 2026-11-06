@@ -17,6 +17,8 @@
 #include "backend.h"
 #include "crypto.h"
 #include "hwdetect.h"
+#include "match_rules.h"
+#include "matcher.h"
 
 #if defined(_WIN32)
 #  define WIN32_LEAN_AND_MEAN
@@ -45,6 +47,14 @@ struct Options {
     int minLen = 5;
     unsigned int threads = 0;
     uint64_t maxAttempts = 0;
+    uint64_t maxMatches = 0;
+    std::string suffix;
+    std::string matchingInput;
+    std::vector<std::string> matchingTemplates;
+    unsigned prefixCount = 0;
+    unsigned suffixCount = 0;
+    bool prefixCountSet = false;
+    bool suffixCountSet = false;
     std::string output = "tron_vanity_matches.txt";
     std::string backend = "auto";   // auto | cpu | gpu
     double benchSeconds = 2.0;
@@ -57,15 +67,23 @@ struct Options {
 
 void printUsage() {
     std::cout <<
-        "TRON 靓号地址生成器 (CPU + 集成显卡自动检测)\n"
-        "规则: 地址结尾满足下列任一即命中并保存:\n"
+        "TRON 靓号地址生成器 (CPU + OpenCL GPU)\n"
+        "私钥来自操作系统 CSPRNG + libsecp256k1（非 Profanity 弱随机，可安全存资产）。\n\n"
+        "模式 A — 内置尾号规则（默认）:\n"
         "  - >=N 位相同字符, 如 AAAAA\n"
-        "  - >=N 位连续字符(只认升序: 每位 ASCII +1, 且同类别: 全数字/全小写/全大写), 如 12345 / abcde / WXYZ\n"
-        "    不含: 54321(降序) 89123(跨缺失的0) xyzab(z->a回绕) 9abcd(数字跨字母) FGHJ(跳过缺失的I)\n\n"
+        "  - >=N 位升序连续(同类别: 数字/小写/大写), 如 12345 / abcde / WXYZ\n\n"
+        "模式 B — 模板规则（兼容 Profanity 规则文件语义，见 examples/matching.txt）:\n"
+        "  --matching FILE|ADDR  每行一个 34 位模板地址(T+Base58)；也可直接写单条地址\n"
+        "  --prefix-count N      生成地址前 N 位须与模板相同，默认 0，最大 10\n"
+        "  --suffix-count N      生成地址后 N 位须与模板相同，默认 6（仅 --matching 时）\n"
+        "  文件内多行规则为「或」关系；命中后仍由 CPU 按模板精确复核。\n\n"
         "用法: tron_vanity_generator [选项]\n"
-        "  --min N          最小匹配位数，默认 5\n"
+        "  --min N          模式 A：最小尾号位数，默认 5（与 --matching 互斥时忽略）\n"
         "  --threads N      CPU 线程数，默认=逻辑核心数\n"
         "  --max N          最大尝试次数，0=无限(默认)\n"
+        "  --max-matches N  命中 N 条后停止，0=无限(默认)\n"
+        "  --once           等同 --max-matches 1\n"
+        "  --suffix TEXT    精确后缀（模式 A 扩展；与 --matching 互斥）\n"
         "  --output FILE    结果文件，默认 tron_vanity_matches.txt\n"
         "  --backend X      auto | cpu | gpu，默认 auto (按压测算力自动选择)\n"
         "  --bench-seconds S 自动选择时每个后端的压测秒数，默认 2\n"
@@ -78,7 +96,7 @@ void printUsage() {
         "  --cpubench [秒]  CPU 吞吐压测（默认 5s，可跟 --threads N）\n"
         "  --profile [秒]   GPU 内核逐阶段耗时占比\n"
         "  --gputest        GPU 内核逐项对照 CPU\n"
-        "  --selftest / --hashtest / --matchtest   地址算法 / 哈希 / 命中规则 自检\n"
+        "  --selftest / --hashtest / --matchtest / --matchruletest   自检\n"
         "  --help           显示本帮助\n";
 }
 
@@ -92,7 +110,17 @@ bool parseArgs(int argc, char** argv, Options& o) {
         if (a == "--min") o.minLen = std::stoi(next("--min"));
         else if (a == "--threads") o.threads = static_cast<unsigned int>(std::stoul(next("--threads")));
         else if (a == "--max") o.maxAttempts = std::stoull(next("--max"));
-        else if (a == "--output") o.output = next("--output");
+        else if (a == "--max-matches") o.maxMatches = std::stoull(next("--max-matches"));
+        else if (a == "--once") o.maxMatches = 1;
+        else if (a == "--suffix") o.suffix = next("--suffix");
+        else if (a == "--matching") o.matchingInput = next("--matching");
+        else if (a == "--prefix-count") {
+            o.prefixCount = static_cast<unsigned>(std::stoul(next("--prefix-count")));
+            o.prefixCountSet = true;
+        } else if (a == "--suffix-count") {
+            o.suffixCount = static_cast<unsigned>(std::stoul(next("--suffix-count")));
+            o.suffixCountSet = true;
+        } else if (a == "--output") o.output = next("--output");
         else if (a == "--backend") o.backend = next("--backend");
         else if (a == "--bench-seconds") o.benchSeconds = std::stod(next("--bench-seconds"));
         else if (a == "--keys-per-item") o.keysPerItem = static_cast<uint32_t>(std::stoul(next("--keys-per-item")));
@@ -104,6 +132,28 @@ bool parseArgs(int argc, char** argv, Options& o) {
         else { std::cerr << "未知参数: " << a << "\n"; printUsage(); return false; }
     }
     if (o.minLen < 2) { std::cerr << "--min 至少为 2\n"; return false; }
+    if (!o.matchingInput.empty()) {
+        if (!o.suffix.empty()) {
+            std::cerr << "--matching 与 --suffix 不能同时使用\n";
+            return false;
+        }
+        std::string err;
+        if (!loadMatchingInput(o.matchingInput, &o.matchingTemplates, &err)) {
+            std::cerr << err << "\n";
+            return false;
+        }
+        if (!o.suffixCountSet && !o.prefixCountSet) o.suffixCount = 6;
+        if (o.prefixCount > 10 || o.suffixCount > 10) {
+            std::cerr << "--prefix-count / --suffix-count 最大 10\n";
+            return false;
+        }
+        if (o.prefixCount + o.suffixCount == 0) {
+            std::cerr << "--matching 需要 --prefix-count 和/或 --suffix-count > 0\n";
+            return false;
+        }
+    } else if (!o.suffix.empty()) {
+        o.minLen = std::max(o.minLen, minLenHintForSuffix(o.suffix));
+    }
     return true;
 }
 
@@ -241,6 +291,49 @@ int matchtest() {
     return fails ? 1 : 0;
 }
 
+int matchruletest() {
+    struct Case {
+        const char* addr;
+        const char* tmpl;
+        unsigned prefix;
+        unsigned suffix;
+        bool want;
+    };
+    const char* tmpl888 = "Txxxxxxxxxxxxxxxxxxxxxxxxxxx888888";
+    const char* tmpl999 = "Txxxxxxxxxxxxxxxxxxxxxxxxxxx999999";
+    const Case cases[] = {
+        {tmpl888, tmpl888, 0, 6, true},
+        {"TTZNkBE5joPmha3dEyb7KZz8bNoFeppppp", tmpl999, 0, 6, false},
+        {"TUqEg3dzVEJNQSVW2HY98z5X8SBdhmao8D", "TUqEg3dzVEJNQSVW2HY98z5X8SBdhmao8D", 3, 5, true},
+        {"TUqEg3dzVEJNQSVW2HY98z5X8SBdhmao8D", "TUqEg3dzVEJNQSVW2HY98z5X8SBdhmao8D", 10, 10, true},
+        {"TUqXXg3dzVEJNQSVW2HY98z5X8SBdhmao8D", "TUqEg3dzVEJNQSVW2HY98z5X8SBdhmao8D", 10, 10, false},
+        {"TR5gxWvpHzh8KqZ3rdsgePWoCn44WfBvz9", "TR5gxWvpHzh8KqZ3rdsgePWoCn44WfBvz9", 2, 0, true},
+    };
+    int fails = 0;
+    for (const auto& c : cases) {
+        std::vector<std::string> t = {c.tmpl};
+        MatchResult r = matchFromTemplates(c.addr, t, c.prefix, c.suffix);
+        bool ok = r.matched == c.want;
+        std::cout << (ok ? "  OK   " : "  FAIL ") << c.addr << "  tmpl=" << c.tmpl
+                  << "  p=" << c.prefix << " s=" << c.suffix << "\n";
+        if (!ok) ++fails;
+    }
+    std::string sample = tmpl888;
+    std::vector<std::string> loaded;
+    std::string err;
+    if (!loadMatchingInput(sample, &loaded, &err)) {
+        std::cout << "  FAIL load single template: " << err << "\n";
+        ++fails;
+    } else if (loaded.size() != 1 || loaded[0] != sample) {
+        std::cout << "  FAIL load single template parse\n";
+        ++fails;
+    } else {
+        std::cout << "  OK   load single template\n";
+    }
+    std::cout << (fails ? std::to_string(fails) + " 个失败\n" : "MATCHRULETEST OK\n");
+    return fails ? 1 : 0;
+}
+
 int gpuSelfTest(const GpuDevice& dev);
 int gpuBench(const GpuDevice& dev, double secs);
 int gpuProfile(const GpuDevice& dev, double secs);
@@ -275,6 +368,7 @@ int main(int argc, char** argv) {
         if (a == "--selftest") return selftest();
         if (a == "--hashtest") return hashtest();
         if (a == "--matchtest") return matchtest();
+        if (a == "--matchruletest") return matchruletest();
         if (a == "--gputest") {
             HardwareReport hw = detectHardware();
             if (hw.gpus.empty()) { std::cerr << "无 GPU: " << hw.openclNote << "\n"; return 1; }
@@ -393,6 +487,11 @@ int main(int argc, char** argv) {
     cfg.minLen = opt.minLen;
     cfg.threads = opt.threads;
     cfg.maxAttempts = opt.maxAttempts;
+    cfg.maxMatches = opt.maxMatches;
+    cfg.suffix = opt.suffix;
+    cfg.matchingTemplates = opt.matchingTemplates;
+    cfg.prefixCount = opt.prefixCount;
+    cfg.suffixCount = opt.suffixCount;
     cfg.verbose = opt.verbose;
 
     RunState state;
@@ -400,13 +499,28 @@ int main(int argc, char** argv) {
     std::signal(SIGINT, onSigint);
 
     double rate = chosenRate > 0 ? chosenRate : (chosen->info().kind == "GPU" ? 700000.0 : 250000.0);
-    // 命中 minLen 位相同/连续尾号的粗略概率（相同 + 递增 + 递减）
-    double p = 3.0 * std::pow(1.0 / 58.0, opt.minLen - 1);
+    double p = 0;
+    if (!opt.matchingTemplates.empty()) {
+        if (opt.suffixCount > 0) p = std::pow(1.0 / 58.0, static_cast<int>(opt.suffixCount) - 1);
+        else if (opt.prefixCount > 0) p = std::pow(1.0 / 58.0, static_cast<int>(opt.prefixCount) - 1);
+    } else if (!opt.suffix.empty()) {
+        p = std::pow(1.0 / 58.0, static_cast<int>(opt.suffix.size()) - 1);
+    } else {
+        p = 3.0 * std::pow(1.0 / 58.0, opt.minLen - 1);
+    }
     double etaSec = p > 0 ? 1.0 / (rate * p) : 0;
 
-    std::cout << "最小位数 : " << opt.minLen << "\n"
-              << "输出文件 : " << opt.output << "\n"
-              << "尝试上限 : " << (opt.maxAttempts ? groupThousands(opt.maxAttempts) : "无限") << "\n";
+    if (!opt.matchingTemplates.empty()) {
+        std::cout << "匹配模式 : 模板文件/地址 (" << opt.matchingTemplates.size() << " 条规则, OR)\n"
+                  << "前缀位数 : " << opt.prefixCount << "\n"
+                  << "后缀位数 : " << opt.suffixCount << "\n";
+    } else {
+        std::cout << "最小位数 : " << opt.minLen << "\n";
+        if (!opt.suffix.empty()) std::cout << "指定后缀 : " << opt.suffix << "\n";
+    }
+    std::cout << "输出文件 : " << opt.output << "\n"
+              << "尝试上限 : " << (opt.maxAttempts ? groupThousands(opt.maxAttempts) : "无限") << "\n"
+              << "命中上限 : " << (opt.maxMatches ? groupThousands(opt.maxMatches) : "无限") << "\n";
     if (etaSec > 0) {
         std::string eta = etaSec < 1     ? "不到 1 秒"
                         : etaSec < 90    ? std::to_string((long)(etaSec + 0.5)) + " 秒"

@@ -36,6 +36,9 @@ if grep -q "无 GPU\|OpenCL 可用，但未枚举到 GPU" /tmp/tron_vanity_gpu_l
   exit 1
 fi
 
+section "matchruletest (模板 prefix/suffix 规则)"
+run_bin --matchruletest
+
 section "gputest (GPU 内核 vs CPU，含 Montgomery N=2..32)"
 run_bin --gputest
 
@@ -50,8 +53,12 @@ if [[ "${SKIP_PROFILE:-0}" != "1" ]]; then
   run_bin --profile "$profile_secs"
 fi
 
-section "smoke run (--backend gpu --max ${smoke_max})"
+section "smoke run (--backend gpu --max ${smoke_max}, --min 5)"
 run_bin --backend gpu --max "$smoke_max" --min 5 --output /tmp/tron_vanity_gpu_smoke.txt
+
+section "smoke matching file (--backend gpu --max ${smoke_max})"
+run_bin --backend gpu --max "$smoke_max" --matching "$root/examples/matching_888888.txt" \
+  --suffix-count 6 --output /tmp/tron_vanity_gpu_smoke_matching.txt
 
 echo
 echo "All GPU tests passed."

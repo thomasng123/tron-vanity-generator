@@ -1,3 +1,6 @@
+# Local GPU/CPU hunt runs (logs, pid, results with private keys)
+run/
+
 # Build output
 build/
 out/

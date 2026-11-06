@@ -6,14 +6,30 @@
 #include <string>
 #include <vector>
 
+#include "match_rules.h"
 #include "matcher.h"
 
 struct RunConfig {
     int minLen = 5;
     unsigned int threads = 0;      // 0 = 自动
     uint64_t maxAttempts = 0;      // 0 = 无限
+    uint64_t maxMatches = 0;       // 0 = 无限；1 = 命中一条即停
+    std::string suffix;            // 非空：地址必须以此字符串结尾（与 --matching 互斥）
+    std::vector<std::string> matchingTemplates;  // --matching 文件或单地址模板行
+    unsigned prefixCount = 0;      // 模板前缀匹配位数（与 Profanity 语义一致）
+    unsigned suffixCount = 0;      // 模板后缀匹配位数
     bool verbose = false;
 };
+
+inline MatchParams matchParamsFromRunConfig(const RunConfig& cfg) {
+    MatchParams p;
+    if (!cfg.matchingTemplates.empty()) p.templates = &cfg.matchingTemplates;
+    p.prefixCount = cfg.prefixCount;
+    p.suffixCount = cfg.suffixCount;
+    p.legacyMinLen = cfg.minLen;
+    p.exactSuffix = cfg.suffix;
+    return p;
+}
 
 struct FoundKey {
     std::string address;
@@ -57,3 +73,12 @@ std::unique_ptr<Backend> makeCpuBackend();
 // CPU 压测（threads=0 表示用逻辑核数）；不含地址匹配回调，测完整 secp256k1+地址流水线
 double cpuTimedBenchmark(double seconds, unsigned int threads = 0);
 std::unique_ptr<Backend> makeGpuBackend(const GpuDevice& dev);
+
+inline void noteAcceptedMatch(const RunConfig& cfg, RunState& state, const ReportFn& report,
+                              const FoundKey& fk) {
+    (void)cfg;
+    state.found.fetch_add(1, std::memory_order_relaxed);
+    report(fk);
+    if (cfg.maxMatches && state.found.load(std::memory_order_relaxed) >= cfg.maxMatches)
+        state.stop.store(true, std::memory_order_relaxed);
+}

@@ -1,4 +1,5 @@
 #pragma once
+#include <algorithm>
 #include <cstdlib>
 #include <cstring>
 #include <string>
@@ -47,6 +48,20 @@ inline int trailingSequenceLen(const std::string& a) {
         ++len;
     }
     return len;
+}
+
+// --suffix 时用于抬高 GPU 内核 min_len，减少无效 CPU 复核（仍以后缀精确比对为准）
+inline int minLenHintForSuffix(const std::string& suffix) {
+    if (suffix.empty()) return 2;
+    int rep = trailingRepeatLen(suffix);
+    int seq = trailingSequenceLen(suffix);
+    int hint = std::max({rep, seq, static_cast<int>(suffix.size())});
+    return hint < 2 ? 2 : hint;
+}
+
+inline bool addressEndsWith(const std::string& addr, const std::string& suffix) {
+    if (suffix.empty() || addr.size() < suffix.size()) return suffix.empty();
+    return addr.compare(addr.size() - suffix.size(), suffix.size(), suffix) == 0;
 }
 
 inline MatchResult evaluateAddress(const std::string& addr, int minLen) {

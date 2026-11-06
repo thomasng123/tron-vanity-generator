@@ -123,11 +123,13 @@ public:
 
     void run(const RunConfig& cfg, RunState& state, const ReportFn& report) override {
         if (!ensureReady()) { std::cerr << "GPU 后端不可用: " << err_ << "\n"; return; }
+        const MatchParams mp = matchParamsFromRunConfig(cfg);
+        const uint32_t gpuMinLen = static_cast<uint32_t>(effectiveGpuMinLen(mp));
         while (!state.stop.load(std::memory_order_relaxed)) {
             if (cfg.maxAttempts && state.checked.load() >= cfg.maxAttempts) { state.stop = true; break; }
             std::vector<uint32_t> hits;
             unsigned char k0[32];
-            if (!runBatch(static_cast<uint32_t>(cfg.minLen), &hits, k0)) {
+            if (!runBatch(gpuMinLen, &hits, k0)) {
                 std::cerr << "GPU 批次执行失败\n";
                 return;
             }
@@ -140,12 +142,13 @@ public:
                 unsigned char pub[64];
                 if (!pubXY(ctx_, k, pub)) continue;
                 std::string addr = tronAddressFromPubXY(pub);
-                MatchResult m = evaluateAddress(addr, cfg.minLen);
-                if (!m.matched) continue;   // GPU 误报，丢弃
+                MatchResult m;
+                if (!tryMatchAddress(addr, mp, &m)) continue;
                 FoundKey fk{addr, bytesToHexUpper(k, 32), std::move(m)};
-                state.found.fetch_add(1, std::memory_order_relaxed);
-                report(fk);
+                noteAcceptedMatch(cfg, state, report, fk);
+                if (state.stop.load(std::memory_order_relaxed)) break;
             }
+            if (state.stop.load(std::memory_order_relaxed)) break;
             state.checked.fetch_add(kBatch, std::memory_order_relaxed);
         }
     }

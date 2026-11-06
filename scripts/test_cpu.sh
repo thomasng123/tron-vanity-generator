@@ -24,6 +24,9 @@ section "hashtest (SHA-256 / Keccak-256 向量)"
 section "matchtest (尾号规则)"
 "$bin" --matchtest
 
+section "matchruletest (模板 prefix/suffix 规则)"
+"$bin" --matchruletest
+
 section "hardware (--list)"
 "$bin" --list
 
@@ -36,8 +39,12 @@ if [[ "$hw_threads" -gt 4 ]]; then
   "$bin" --cpubench "$bench_secs" --threads 4
 fi
 
-section "smoke run (--backend cpu --max ${smoke_max})"
+section "smoke run (--backend cpu --max ${smoke_max}, --min 5)"
 "$bin" --backend cpu --max "$smoke_max" --min 5 --output /tmp/tron_vanity_smoke.txt
+
+section "smoke matching file (--backend cpu --max ${smoke_max})"
+"$bin" --backend cpu --max "$smoke_max" --matching "$root/examples/matching_888888.txt" \
+  --suffix-count 6 --output /tmp/tron_vanity_smoke_matching.txt
 
 echo
 echo "All CPU tests passed."

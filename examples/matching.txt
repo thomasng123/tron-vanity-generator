@@ -1,0 +1,8 @@
+# TRON 模板规则文件（Profanity 风格，每行 34 位 T 开头 Base58）
+# 与 --prefix-count / --suffix-count 联用；多行之间为「或」关系。
+# 示例：仅后缀 6 位 → 最后一行等价于地址以 888888 结尾
+#
+# 占位行：中间字符仅作模板参考，只有前/后 N 位参与比对
+Txxxxxxxxxxxxxxxxxxxxxxxxxxx888888
+# 真实地址行：可指定前后若干位与该行相同
+# TUqEg3dzVEJNQSVW2HY98z5X8SBdhmao8D

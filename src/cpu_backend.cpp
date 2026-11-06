@@ -71,11 +71,12 @@ uint64_t threadLoop(const RunConfig& cfg, RunState* state, const ReportFn* repor
         if (c.next(xy)) {
             std::string addr = tronAddressFromPubXY(xy);
             if (report) {
-                MatchResult m = evaluateAddress(addr, cfg.minLen);
-                if (m.matched) {
+                MatchParams mp = matchParamsFromRunConfig(cfg);
+                MatchResult m;
+                if (tryMatchAddress(addr, mp, &m)) {
                     FoundKey fk{addr, c.privHex(), std::move(m)};
-                    state->found.fetch_add(1, std::memory_order_relaxed);
-                    (*report)(fk);
+                    noteAcceptedMatch(cfg, *state, *report, fk);
+                    if (state->stop.load(std::memory_order_relaxed)) break;
                 }
             }
             (void)addr;

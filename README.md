@@ -5,7 +5,7 @@ High-performance TRON (TRX) vanity address generator for Windows and Linux.
 - CPU multi-threaded generation (libsecp256k1)
 - Intel / AMD **OpenCL GPU** backend — secp256k1 + Keccak-256 + SHA-256 + Base58 + suffix matching all in-kernel
 - Automatic hardware detection, automatic CPU/GPU benchmark and **fastest-backend selection**
-- Suffix matching: repeated characters (`AAAAA`) and ascending sequences (`12345`, `abcde`, `WXYZ`)
+- Suffix matching: repeated characters (`AAAAA`) and ascending sequences (`12345`, `abcde`, `WXYZ`); optional **Profanity-style template file** (`--matching`, `--prefix-count`, `--suffix-count`) with OS CSPRNG (not Profanity’s weak RNG)
 - GPU ↔ CPU cross-validation (`--gputest`), rule self-check (`--matchtest`)
 - No OpenSSL. Single self-contained `.exe` (static runtime), only needs a GPU driver's `OpenCL.dll` for the GPU path
 
@@ -110,11 +110,37 @@ powershell -ExecutionPolicy Bypass -File build.ps1
 .\build\tron_vanity_generator.exe --gputest        # GPU 内核逐项对照 CPU
 .\build\tron_vanity_generator.exe --bench 4         # 扫 ECW / MONT_N / KPI + 规则吞吐
 .\build\tron_vanity_generator.exe --profile 4       # 内核逐阶段耗时占比
+.\build\tron_vanity_generator.exe --matchruletest   # 模板 prefix/suffix 规则自检
+```
+
+### 模板规则文件（Profanity 风格，安全随机）
+
+与旧版 **Profanity** 不同：本工具 **不使用 32 位弱种子**，私钥来自 OS CSPRNG（`/dev/urandom` / `BCryptGenRandom`）+ libsecp256k1。可沿用类似的**规则文件写法**，但请**不要**用 Profanity 生成过的地址存资产。
+
+规则文件（见 `examples/matching.txt`）：每行一条 **34 位** TRON 模板（`T` + Base58），`#` 开头为注释。多行规则为 **或** 关系。
+
+```bash
+# Linux：后缀 6 位与模板末 6 位一致（例：888888），命中 1 条即停
+./build/tron_vanity_generator --backend gpu \
+  --matching examples/matching_888888.txt --suffix-count 6 --once
+
+# 单条真实地址 + 前 2 后 4 位与模板一致
+./build/tron_vanity_generator --matching TUqEg3dzVEJNQSVW2HY98z5X8SBdhmao8D \
+  --prefix-count 2 --suffix-count 4 --once
+
+# 后台脚本（GPU）
+./scripts/run_gpu_suffix.sh start
+./scripts/run_gpu_suffix.sh status
 ```
 
 | 参数 | 说明 |
 | --- | --- |
-| `--min N` | 最小匹配位数，默认 5 |
+| `--min N` | **内置规则**：尾部相同/升序连续 ≥N 位，默认 5 |
+| `--matching FILE\|ADDR` | **模板规则**：文件或单条 34 位模板地址 |
+| `--prefix-count N` | 模板前缀匹配位数（0–10），默认 0 |
+| `--suffix-count N` | 模板后缀匹配位数（0–10）；仅 `--matching` 且未指定时默认 **6** |
+| `--suffix TEXT` | 精确后缀（与 `--matching` 互斥） |
+| `--max-matches N` / `--once` | 命中 N 条后退出 |
 | `--threads N` | CPU 线程数，默认=逻辑核心数 |
 | `--max N` | 最大尝试次数，0=无限（默认） |
 | `--output FILE` | 结果文件，默认 `tron_vanity_matches.txt`（UTF-8 BOM） |

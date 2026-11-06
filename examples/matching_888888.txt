@@ -1,0 +1,2 @@
+# 匹配后 6 位为 888888（--suffix-count 6）
+Txxxxxxxxxxxxxxxxxxxxxxxxxxx888888
