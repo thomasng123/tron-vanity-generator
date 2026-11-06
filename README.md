@@ -3,7 +3,7 @@
 High-performance TRON (TRX) vanity address generator for Windows and Linux.
 
 - CPU multi-threaded generation (libsecp256k1)
-- Intel / AMD **OpenCL GPU** backend — secp256k1 + Keccak-256 + SHA-256 + Base58 + suffix matching all in-kernel
+- Intel / AMD **OpenCL GPU** backend — secp256k1 + Keccak-256 + SHA-256 + Base58; **in-kernel** filter is either vanity tail rules (repeat / ascending) **or** a **sorted suffix table** when `--matching` uses **suffix-only** templates (`prefix-count` 0) or `--suffix`; **prefix + suffix** templates still use a loose GPU prefilter and **CPU** template check
 - Automatic hardware detection, automatic CPU/GPU benchmark and **fastest-backend selection**
 - Suffix matching: repeated characters (`AAAAA`) and ascending sequences (`12345`, `abcde`, `WXYZ`); optional **Profanity-style template file** (`--matching`, `--prefix-count`, `--suffix-count`) with OS CSPRNG (not Profanity’s weak RNG)
 - GPU ↔ CPU cross-validation (`--gputest`), rule self-check (`--matchtest`)
@@ -168,12 +168,13 @@ powershell -ExecutionPolicy Bypass -File build.ps1
 | **GPU 后端：OpenCL secp256k1 批处理内核** | ✅ |
 | GPU↔CPU 交叉验证（`--gputest`，含 s=0 / 2³¹−1 / 2³²−1 等边界） | ✅ 完全一致 |
 
-GPU 数据流：host 上传基点 `P0 = k0·G` 与预计算表 `T[j] = 2^j·G` → 每个 work-item 用
-≤32 次雅可比点加算出 `P0 + s·G` → 在**内核内**完成 keccak256 / sha256d / base58 尾部 /
-尾号判定 → 只 `atomic_inc` 回传命中的 `s` → host 用 libsecp256k1 复算确认后写文件。
-每次内核启动扫 2²⁰ 个连续私钥，随机换 `k0`。域/群运算移植自 bitcoin-core/libsecp256k1
-（`field_10x26`），费马求逆用其加法链。base58 尾部直接输出字符**位置**(0–57)，
-判定“相同/连续”无需逆查表。
+GPU 数据流：host 上传基点 `P0 = k0·G` 与预计算表 → 每个 work-item 算出 `P0 + s·G` → **内核内**
+keccak256 / sha256d / base58 尾部（末 **12** 个字符）→ 命中条件为 **二选一**：(1) 内置靓号规则
+（相同字符或同类升序连续，见 `--min`）；(2) **多行模板去重后的后缀表**（每行 **反转** 后与
+尾部比较，**二分查找**，仅当 `prefix-count==0` 且后缀长度 ≤12）→ `atomic_inc` 回传 `s` →
+**host 再用完整 34 位地址 + 模板/OR 规则复核**后写文件。每次内核启动扫约 **2¹⁶** 个连续私钥，
+随机换 `k0`。域/群运算移植自 bitcoin-core/libsecp256k1（`field_10x26`）。
+**`--profile`** 目前仅覆盖路径 (1)，不反映后缀表分支的相对耗时。
 
 **基准测试** `--bench [秒]`：每档预热到稳态再计时，扫 `--keys-per-item` 甜点位，
 并按尾号规则（相同/连续 ≥ 5/6/7/8 位）分别测吞吐。

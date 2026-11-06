@@ -356,6 +356,55 @@ int matchruletest() {
         bool skip = !buildGpuSuffixTable(mp, &flat, &sl, &sn);
         std::cout << (skip ? "  OK   " : "  FAIL ") << "buildGpuSuffixTable skip when prefix>0\n";
         if (!skip) ++fails;
+
+        // 与 kernels/secp256k1_tron.cl 中 suffix_table_hit 等价（字节序 + 二分），
+        // 对照「任一模板后缀匹配」语义（buildGpuSuffixTable 已排序去重）。
+        mp.prefixCount = 0;
+        mp.suffixCount = 6;
+        if (!buildGpuSuffixTable(mp, &flat, &sl, &sn) || sn != 2 || sl != 6) {
+            std::cout << "  FAIL suffix table rebuild for hit test\n";
+            ++fails;
+        } else {
+            auto addrTailTc = [](const std::string& addr, unsigned len) {
+                std::string tc(len, '\0');
+                for (unsigned i = 0; i < len; ++i)
+                    tc[i] = addr[kTronAddressLen - 1 - i];
+                return tc;
+            };
+            auto suffixTableHitCpu = [](const std::string& tc, const std::vector<unsigned char>& tab,
+                                        unsigned suf_n, unsigned suf_len) -> bool {
+                if (suf_n == 0 || suf_len == 0 || tc.size() < suf_len) return false;
+                int lo = 0, hi = static_cast<int>(suf_n) - 1;
+                while (lo <= hi) {
+                    int mid = (lo + hi) >> 1;
+                    const unsigned char* p = tab.data() + static_cast<size_t>(mid) * suf_len;
+                    int cmp = 0;
+                    for (unsigned j = 0; j < suf_len; ++j) {
+                        unsigned char a = static_cast<unsigned char>(tc[j]);
+                        unsigned char b = p[j];
+                        if (a < b) {
+                            cmp = -1;
+                            break;
+                        }
+                        if (a > b) {
+                            cmp = 1;
+                            break;
+                        }
+                    }
+                    if (cmp == 0) return true;
+                    if (cmp < 0) hi = mid - 1;
+                    else lo = mid + 1;
+                }
+                return false;
+            };
+            bool h1 = suffixTableHitCpu(addrTailTc(tmpls[0], 6), flat, sn, sl);
+            bool h2 = suffixTableHitCpu(addrTailTc(tmpls[1], 6), flat, sn, sl);
+            bool h3 = suffixTableHitCpu(addrTailTc("Txxxxxxxxxxxxxxxxxxxxxxxxxxx999999", 6), flat, sn, sl);
+            bool hitOk = h1 && h2 && !h3;
+            std::cout << (hitOk ? "  OK   " : "  FAIL ")
+                      << "suffixTableHitCpu vs template OR semantics\n";
+            if (!hitOk) ++fails;
+        }
     }
 
     std::cout << (fails ? std::to_string(fails) + " 个失败\n" : "MATCHRULETEST OK\n");
