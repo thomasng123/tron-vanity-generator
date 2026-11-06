@@ -1,5 +1,11 @@
 #pragma OPENCL EXTENSION cl_khr_global_int32_base_atomics : enable
 
+/* 辅助函数用 static inline，而不是给 inline 做宏。
+   AMD 的 comgr + lld（Windows 驱动，以及 Ubuntu 上的 ROCm）按 C99 处理 inline：
+   没被内联时会引用 hidden 外部符号，却不生成函数体。static inline 有内部链接的定义。
+   不能写 #define inline：Ubuntu 24 的 PoCL / intel-opencl-icd 用 Clang，
+   把关键字宏当成错误。static inline 是 OpenCL C 1.2 的普通写法，NVIDIA / Intel 同样接受。 */
+
 #ifndef KPI
 #define KPI 8            /* 每个 work-item 连续处理的私钥数（host 用 -D KPI=n 覆盖） */
 #endif
@@ -25,7 +31,7 @@ typedef struct { fe x, y, z; int inf; } gej;
 
 /* ---------------- 域运算 ---------------- */
 
-inline void fe_mul_inner(uint *r, const uint *a, const uint *b) {
+static inline void fe_mul_inner(uint *r, const uint *a, const uint *b) {
     ulong c, d;
     ulong u0, u1, u2, u3, u4, u5, u6, u7, u8;
     uint t9, t1, t0, t2, t3, t4, t5, t6, t7;
@@ -106,7 +112,7 @@ inline void fe_mul_inner(uint *r, const uint *a, const uint *b) {
     r[2] = d;
 }
 
-inline void fe_sqr_inner(uint *r, const uint *a) {
+static inline void fe_sqr_inner(uint *r, const uint *a) {
     ulong c, d;
     ulong u0, u1, u2, u3, u4, u5, u6, u7, u8;
     uint t9, t0, t1, t2, t3, t4, t5, t6, t7;
@@ -180,25 +186,25 @@ inline void fe_sqr_inner(uint *r, const uint *a) {
     r[2] = d;
 }
 
-inline void fe_mul(fe *r, const fe *a, const fe *b) { fe_mul_inner(r->n, a->n, b->n); }
-inline void fe_sqr(fe *r, const fe *a) { fe_sqr_inner(r->n, a->n); }
+static inline void fe_mul(fe *r, const fe *a, const fe *b) { fe_mul_inner(r->n, a->n, b->n); }
+static inline void fe_sqr(fe *r, const fe *a) { fe_sqr_inner(r->n, a->n); }
 
-inline void fe_set_int(fe *r, uint v) {
+static inline void fe_set_int(fe *r, uint v) {
     r->n[0] = v;
     for (int i = 1; i < 10; i++) r->n[i] = 0;
 }
 
-inline void fe_add(fe *r, const fe *a) {
+static inline void fe_add(fe *r, const fe *a) {
     for (int i = 0; i < 10; i++) r->n[i] += a->n[i];
 }
 
-inline void fe_add_int(fe *r, uint a) { r->n[0] += a; }
+static inline void fe_add_int(fe *r, uint a) { r->n[0] += a; }
 
-inline void fe_mul_int(fe *r, uint a) {
+static inline void fe_mul_int(fe *r, uint a) {
     for (int i = 0; i < 10; i++) r->n[i] *= a;
 }
 
-inline void fe_negate(fe *r, const fe *a, int m) {
+static inline void fe_negate(fe *r, const fe *a, int m) {
     r->n[0] = 0x3FFFC2FU * 2 * (m + 1) - a->n[0];
     r->n[1] = 0x3FFFFBFU * 2 * (m + 1) - a->n[1];
     r->n[2] = 0x3FFFFFFU * 2 * (m + 1) - a->n[2];
@@ -211,13 +217,13 @@ inline void fe_negate(fe *r, const fe *a, int m) {
     r->n[9] = 0x03FFFFFU * 2 * (m + 1) - a->n[9];
 }
 
-inline void fe_cmov(fe *r, const fe *a, int flag) {
+static inline void fe_cmov(fe *r, const fe *a, int flag) {
     uint mask0 = (uint)flag + ~((uint)0);
     uint mask1 = ~mask0;
     for (int i = 0; i < 10; i++) r->n[i] = (r->n[i] & mask0) | (a->n[i] & mask1);
 }
 
-inline void fe_half(fe *r) {
+static inline void fe_half(fe *r) {
     uint t0 = r->n[0], t1 = r->n[1], t2 = r->n[2], t3 = r->n[3], t4 = r->n[4],
          t5 = r->n[5], t6 = r->n[6], t7 = r->n[7], t8 = r->n[8], t9 = r->n[9];
     uint one = 1U;
@@ -237,7 +243,7 @@ inline void fe_half(fe *r) {
     r->n[9] = (t9 >> 1);
 }
 
-inline void fe_normalize(fe *r) {
+static inline void fe_normalize(fe *r) {
     uint t0 = r->n[0], t1 = r->n[1], t2 = r->n[2], t3 = r->n[3], t4 = r->n[4],
          t5 = r->n[5], t6 = r->n[6], t7 = r->n[7], t8 = r->n[8], t9 = r->n[9];
     uint m;
@@ -272,7 +278,7 @@ inline void fe_normalize(fe *r) {
     r->n[5] = t5; r->n[6] = t6; r->n[7] = t7; r->n[8] = t8; r->n[9] = t9;
 }
 
-inline int fe_normalizes_to_zero(const fe *r) {
+static inline int fe_normalizes_to_zero(const fe *r) {
     uint t0 = r->n[0], t1 = r->n[1], t2 = r->n[2], t3 = r->n[3], t4 = r->n[4],
          t5 = r->n[5], t6 = r->n[6], t7 = r->n[7], t8 = r->n[8], t9 = r->n[9];
     uint z0, z1;
@@ -291,7 +297,7 @@ inline int fe_normalizes_to_zero(const fe *r) {
     return (z0 == 0) | (z1 == 0x3FFFFFFU);
 }
 
-inline void fe_set_b32(fe *r, const uchar *a) {
+static inline void fe_set_b32(fe *r, const uchar *a) {
     r->n[0] = (uint)a[31] | ((uint)a[30] << 8) | ((uint)a[29] << 16) | ((uint)(a[28] & 0x3) << 24);
     r->n[1] = (uint)((a[28] >> 2) & 0x3f) | ((uint)a[27] << 6) | ((uint)a[26] << 14) | ((uint)(a[25] & 0xf) << 22);
     r->n[2] = (uint)((a[25] >> 4) & 0xf) | ((uint)a[24] << 4) | ((uint)a[23] << 12) | ((uint)(a[22] & 0x3f) << 20);
@@ -304,9 +310,9 @@ inline void fe_set_b32(fe *r, const uchar *a) {
     r->n[9] = (uint)((a[2] >> 2) & 0x3f) | ((uint)a[1] << 6) | ((uint)a[0] << 14);
 }
 
-inline void wbe32(uchar *p, uint x) { p[0] = x >> 24; p[1] = x >> 16; p[2] = x >> 8; p[3] = x; }
+static inline void wbe32(uchar *p, uint x) { p[0] = x >> 24; p[1] = x >> 16; p[2] = x >> 8; p[3] = x; }
 
-inline void fe_get_b32(uchar *r, const fe *a) {
+static inline void fe_get_b32(uchar *r, const fe *a) {
     wbe32(&r[0],  (a->n[9] << 10) | (a->n[8] >> 16));
     wbe32(&r[4],  (a->n[8] << 16) | (a->n[7] >> 10));
     wbe32(&r[8],  (a->n[7] << 22) | (a->n[6] >> 4));
@@ -318,7 +324,7 @@ inline void fe_get_b32(uchar *r, const fe *a) {
 }
 
 /* a^(p-2) mod p —— 费马求逆（libsecp256k1 加法链）*/
-inline void fe_inv(fe *r, const fe *a) {
+static inline void fe_inv(fe *r, const fe *a) {
     fe x2, x3, x6, x9, x11, x22, x44, x88, x176, x220, x223, t1;
     int j;
     fe_sqr(&x2, a);       fe_mul(&x2, &x2, a);
@@ -341,7 +347,7 @@ inline void fe_inv(fe *r, const fe *a) {
 /* ---------------- 群运算 ---------------- */
 
 /* 统一加法/倍点：r = a + b，b 为仿射点 (b.inf 必须为 0)。移植自 secp256k1_gej_add_ge。 */
-inline void gej_add_ge(gej *r, const gej *a, const ge *b) {
+static inline void gej_add_ge(gej *r, const gej *a, const ge *b) {
     fe zz, u1, u2, s1, s2, t, tt, m, n, q, rr, m_alt, rr_alt;
     fe fe_one; fe_set_int(&fe_one, 1);
     int degenerate;
@@ -386,12 +392,12 @@ inline void gej_add_ge(gej *r, const gej *a, const ge *b) {
     r->inf = fe_normalizes_to_zero(&r->z);
 }
 
-inline void gej_from_ge(gej *r, const ge *a) {
+static inline void gej_from_ge(gej *r, const ge *a) {
     r->x = a->x; r->y = a->y; fe_set_int(&r->z, 1); r->inf = a->inf;
 }
 
 /* 转仿射并输出 X||Y (各 32 字节大端，私有内存) */
-inline void gej_to_pub(uchar *out, gej *a) {
+static inline void gej_to_pub(uchar *out, gej *a) {
     fe zi, z2, z3, x, y;
     fe_inv(&zi, &a->z);
     fe_sqr(&z2, &zi);
@@ -405,7 +411,7 @@ inline void gej_to_pub(uchar *out, gej *a) {
 }
 
 /* 从 global 大端 64 字节载入 ge (仿射) */
-inline void ge_load_g(ge *p, __global const uchar *xy) {
+static inline void ge_load_g(ge *p, __global const uchar *xy) {
     uchar t[64];
     for (int i = 0; i < 64; i++) t[i] = xy[i];
     fe_set_b32(&p->x, &t[0]);
@@ -428,7 +434,7 @@ inline void ge_load_g(ge *p, __global const uchar *xy) {
 #define ECW_DIGITS (1 << ECW)
 #define ECW_WINDOWS ((ECBITS + ECW - 1) / ECW)
 
-inline void ec_base_mul(gej *acc, const ge *P0, __global const uchar *table_b32, uint base) {
+static inline void ec_base_mul(gej *acc, const ge *P0, __global const uchar *table_b32, uint base) {
     gej_from_ge(acc, P0);
 #if ECW == 1
     for (int j = 0; j < 32; j++) {
@@ -449,7 +455,7 @@ inline void ec_base_mul(gej *acc, const ge *P0, __global const uchar *table_b32,
 }
 
 /* 生成器 G 在表中的位置 */
-inline void ec_load_G(ge *G, __global const uchar *table_b32) {
+static inline void ec_load_G(ge *G, __global const uchar *table_b32) {
 #if ECW == 1
     ge_load_g(G, &table_b32[0 * 64]);          /* 2^0 * G */
 #else
@@ -469,9 +475,9 @@ __constant ulong KECCAK_RC[24] = {
 __constant int KECCAK_RHO[25] = {
     0,1,62,28,27, 36,44,6,55,20, 3,10,43,25,39, 41,45,15,21,8, 18,2,61,56,14 };
 
-inline ulong rotl64(ulong x, int n) { return (x << n) | (x >> (64 - n)); }
+static inline ulong rotl64(ulong x, int n) { return (x << n) | (x >> (64 - n)); }
 
-inline void keccakf(ulong *s) {
+static inline void keccakf(ulong *s) {
     for (int rnd = 0; rnd < 24; rnd++) {
         ulong c[5], d[5];
         for (int x = 0; x < 5; x++)
@@ -493,7 +499,7 @@ inline void keccakf(ulong *s) {
 }
 
 /* keccak256 of exactly 64 bytes */
-inline void keccak256_64(uchar *out, const uchar *in) {
+static inline void keccak256_64(uchar *out, const uchar *in) {
     ulong s[25];
     for (int i = 0; i < 25; i++) s[i] = 0;
     for (int i = 0; i < 64; i++)
@@ -517,10 +523,10 @@ __constant uint SHA_K[64] = {
     0x19a4c116,0x1e376c08,0x2748774c,0x34b0bcb5,0x391c0cb3,0x4ed8aa4a,0x5b9cca4f,0x682e6ff3,
     0x748f82ee,0x78a5636f,0x84c87814,0x8cc70208,0x90befffa,0xa4506ceb,0xbef9a3f7,0xc67178f2 };
 
-inline uint shr(uint x, int n) { return x >> n; }
-inline uint rotr(uint x, int n) { return (x >> n) | (x << (32 - n)); }
+static inline uint shr(uint x, int n) { return x >> n; }
+static inline uint rotr(uint x, int n) { return (x >> n) | (x << (32 - n)); }
 
-inline void sha256_block(uint *st, const uchar *p) {
+static inline void sha256_block(uint *st, const uchar *p) {
     uint w[64];
     for (int i = 0; i < 16; i++)
         w[i] = ((uint)p[4*i] << 24) | ((uint)p[4*i+1] << 16) | ((uint)p[4*i+2] << 8) | (uint)p[4*i+3];
@@ -543,7 +549,7 @@ inline void sha256_block(uint *st, const uchar *p) {
 }
 
 /* sha256 of a short message (< 56 bytes), single block */
-inline void sha256_short(uchar *out, const uchar *msg, int len) {
+static inline void sha256_short(uchar *out, const uchar *msg, int len) {
     uint st[8] = {0x6a09e667,0xbb67ae85,0x3c6ef372,0xa54ff53a,0x510e527f,0x9b05688c,0x1f83d9ab,0x5be0cd19};
     uchar blk[64];
     for (int i = 0; i < 64; i++) blk[i] = 0;
@@ -570,7 +576,7 @@ __constant char B58[58] = {
     'a','b','c','d','e','f','g','h','i','j','k','m','n','o','p','q','r','s','t','u','v','w','x','y','z' };
 
 /* 字符类别：1=数字 2=小写 3=大写 0=其它（与 src/matcher.h 一致）*/
-inline int char_class(uchar c) {
+static inline int char_class(uchar c) {
     if (c >= '0' && c <= '9') return 1;
     if (c >= 'a' && c <= 'z') return 2;
     if (c >= 'A' && c <= 'Z') return 3;
@@ -578,7 +584,7 @@ inline int char_class(uchar c) {
 }
 
 /* full[25] 大端；取地址最后 TAIL 个 base58 字符，tc[0] = 最末字符。 */
-inline void base58_tail(uchar *tc, const uchar *full25) {
+static inline void base58_tail(uchar *tc, const uchar *full25) {
     uchar num[25];
     for (int i = 0; i < 25; i++) num[i] = full25[i];
     for (int it = 0; it < TAIL; it++) {
@@ -595,7 +601,7 @@ inline void base58_tail(uchar *tc, const uchar *full25) {
 /* 返回结尾「相同」或「连续」尾段的最大长度。
  * 连续 = 只认升序：每位 ASCII +1，且整段同一类别（全数字/全小写/全大写）。
  * tc[0] 是地址最末字符，所以升序要求 tc[0] = tc[1] + 1。*/
-inline int tail_match_len(const uchar *tc) {
+static inline int tail_match_len(const uchar *tc) {
     int rep = 1;
     for (int i = 1; i < TAIL; i++) { if (tc[i] == tc[0]) rep++; else break; }
 
@@ -615,7 +621,7 @@ inline int tail_match_len(const uchar *tc) {
 /* ---------------- 主内核 ---------------- */
 
 /* pub = X||Y (64B 大端)。算 TRON 地址结尾 TAIL 个 base58 位置。 */
-inline void pub_to_tail(const uchar *pub, uchar *tp) {
+static inline void pub_to_tail(const uchar *pub, uchar *tp) {
     uchar h[32];
     keccak256_64(h, pub);
     uchar payload[21];
@@ -630,31 +636,59 @@ inline void pub_to_tail(const uchar *pub, uchar *tp) {
     base58_tail(tp, full);
 }
 
-inline void emit_if_match(const uchar *pub, uint s, uint min_len,
+/* 任意后缀表：host 把每条后缀按 tc 顺序（地址末字符在前）打包、排序去重后上传。
+ * suf_n==0 时退回内置相同/升序靓号过滤（min_len）。 */
+static inline int suffix_table_hit(const uchar *tc,
+                                   __global const uchar *suf_tab,
+                                   uint suf_n, uint suf_len) {
+    if (suf_n == 0 || suf_len == 0 || suf_len > TAIL) return 0;
+    int lo = 0, hi = (int)suf_n - 1;
+    while (lo <= hi) {
+        int mid = (lo + hi) >> 1;
+        __global const uchar *p = suf_tab + (uint)mid * suf_len;
+        int cmp = 0;
+        for (uint j = 0; j < suf_len; j++) {
+            uchar a = tc[j], b = p[j];
+            if (a < b) { cmp = -1; break; }
+            if (a > b) { cmp = 1; break; }
+        }
+        if (cmp == 0) return 1;
+        if (cmp < 0) hi = mid - 1;
+        else lo = mid + 1;
+    }
+    return 0;
+}
+
+static inline void emit_if_match(const uchar *pub, uint s, uint min_len,
+                          __global const uchar *suf_tab, uint suf_n, uint suf_len,
                           volatile __global uint *out_count,
                           __global uint *out_s, uint out_cap) {
     uchar tp[TAIL];
     pub_to_tail(pub, tp);
-    if ((uint)tail_match_len(tp) >= min_len) {
+    int hit = 0;
+    if (suf_n > 0) hit = suffix_table_hit(tp, suf_tab, suf_n, suf_len);
+    else hit = (uint)tail_match_len(tp) >= min_len;
+    if (hit) {
         uint idx = atomic_inc(out_count);
         if (idx < out_cap) out_s[idx] = s;
     }
 }
 
-inline void probe_one(gej *acc, uint s, uint min_len,
+static inline void probe_one(gej *acc, uint s, uint min_len,
+                      __global const uchar *suf_tab, uint suf_n, uint suf_len,
                       volatile __global uint *out_count,
                       __global uint *out_s, uint out_cap) {
     uchar pub[64];
     gej_to_pub(pub, acc);
-    emit_if_match(pub, s, min_len, out_count, out_s, out_cap);
+    emit_if_match(pub, s, min_len, suf_tab, suf_n, suf_len, out_count, out_s, out_cap);
 }
 
 /* fe <-> __local uint[10] */
-inline void fe_ld_l(fe *r, __local const uint *p) { for (int i = 0; i < 10; i++) r->n[i] = p[i]; }
-inline void fe_st_l(__local uint *p, const fe *a) { for (int i = 0; i < 10; i++) p[i] = a->n[i]; }
+static inline void fe_ld_l(fe *r, __local const uint *p) { for (int i = 0; i < 10; i++) r->n[i] = p[i]; }
+static inline void fe_st_l(__local uint *p, const fe *a) { for (int i = 0; i < 10; i++) p[i] = a->n[i]; }
 
 /* Jacobian (X,Y) + 已求逆的 z^-1 -> 仿射 pub 64B 大端 */
-inline void jac_to_pub(uchar *pub, const fe *X, const fe *Y, const fe *zi) {
+static inline void jac_to_pub(uchar *pub, const fe *X, const fe *Y, const fe *zi) {
     fe z2, z3, x, y;
     fe_sqr(&z2, zi);
     fe_mul(&z3, zi, &z2);
@@ -671,7 +705,7 @@ inline void jac_to_pub(uchar *pub, const fe *X, const fe *Y, const fe *zi) {
 #endif
 
 /* Montgomery 批量求逆：zbuf 存 N 个 Z，出口 zinv 存 N 个 z^-1。所有 WI 必须都调用。 */
-inline void mont_batch_invert(__local uint *zbuf, __local uint *zinv, int lid) {
+static inline void mont_batch_invert(__local uint *zbuf, __local uint *zinv, int lid) {
     barrier(CLK_LOCAL_MEM_FENCE);
     if (lid == 0) {
         fe prod, zt;
@@ -703,6 +737,9 @@ __kernel void tron_vanity_probe(
         __global const uchar *P0_b32,
         __global const uchar *table_b32,
         const uint min_len,
+        __global const uchar *suf_tab,
+        const uint suf_n,
+        const uint suf_len,
         volatile __global uint *out_count,
         __global uint *out_s,
         const uint out_cap) {
@@ -717,7 +754,8 @@ __kernel void tron_vanity_probe(
 
     #pragma unroll 1
     for (uint i = 0; i < KPI; i++) {
-        probe_one(&acc, base + i, min_len, out_count, out_s, out_cap);
+        probe_one(&acc, base + i, min_len, suf_tab, suf_n, suf_len,
+                  out_count, out_s, out_cap);
         gej_add_ge(&acc, &acc, &Gpt);
     }
 }
@@ -729,6 +767,9 @@ void tron_vanity_probe(
         __global const uchar *P0_b32,
         __global const uchar *table_b32,
         const uint min_len,
+        __global const uchar *suf_tab,
+        const uint suf_n,
+        const uint suf_len,
         volatile __global uint *out_count,
         __global uint *out_s,
         const uint out_cap) {
@@ -749,7 +790,7 @@ void tron_vanity_probe(
     fe_ld_l(&zi, &zinv[lid * 10]);
     uchar pub[64];
     jac_to_pub(pub, &acc.x, &acc.y, &zi);
-    emit_if_match(pub, s, min_len, out_count, out_s, out_cap);
+    emit_if_match(pub, s, min_len, suf_tab, suf_n, suf_len, out_count, out_s, out_cap);
 }
 
 #endif

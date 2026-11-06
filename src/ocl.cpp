@@ -5,6 +5,7 @@
 
 #if defined(_WIN32)
 #  define WIN32_LEAN_AND_MEAN
+#  define NOMINMAX
 #  include <windows.h>
 #else
 #  include <dlfcn.h>
@@ -42,9 +43,11 @@ bool g_loaded = false;
 void* g_oclLib = nullptr;
 #endif
 
-using ResolveFn = void* (*)(const char*);
-
-bool bindOpenCLSymbols(ResolveFn resolve, std::string* err) {
+// 模板同时吃两种解析器，避免绑死函数指针类型：
+//   Windows：lambda 要捕获 HMODULE，带捕获的 lambda 不能转成函数指针（MSVC 19.51 会报错）。
+//   Linux：无捕获 lambda，直接 dlsym(libOpenCL.so.1)。g++（Ubuntu 24 默认 GCC 13）同样接受。
+template <class Resolve>
+bool bindOpenCLSymbols(Resolve resolve, std::string* err) {
     auto ld = [&](auto& fn, const char* name) -> bool {
         fn = reinterpret_cast<std::remove_reference_t<decltype(fn)>>(resolve(name));
         if (!fn) {

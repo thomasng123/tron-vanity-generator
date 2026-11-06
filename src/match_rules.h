@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cstring>
 #include <fstream>
 #include <string>
 #include <vector>
@@ -92,37 +93,60 @@ inline bool tryMatchAddress(const std::string& addr, const MatchParams& p, Match
 }
 
 inline int effectiveGpuMinLen(const MatchParams& p) {
+    // 后缀表走内核二分查找时，vanity min_len 不用；仍返回合法下限供未启用表时回退。
     if (p.templates && !p.templates->empty()) {
-        if (p.suffixCount >= 2) {
-            bool allSameSuffix = true;
-            const auto& t0 = (*p.templates)[0];
-            for (const auto& tmpl : *p.templates) {
-                for (unsigned i = 0; i < p.suffixCount; ++i) {
-                    size_t idx = kTronAddressLen - 1 - i;
-                    if (tmpl[idx] != t0[idx]) {
-                        allSameSuffix = false;
-                        break;
-                    }
-                }
-                if (!allSameSuffix) break;
-            }
-            if (allSameSuffix) {
-                bool allSameChar = true;
-                char c = t0[kTronAddressLen - 1];
-                for (unsigned i = 1; i < p.suffixCount; ++i) {
-                    if (t0[kTronAddressLen - 1 - i] != c) {
-                        allSameChar = false;
-                        break;
-                    }
-                }
-                if (allSameChar) return static_cast<int>(p.suffixCount);
-            }
-            return static_cast<int>(p.suffixCount);
-        }
+        if (p.prefixCount > 0) return 2;  // 前缀仍只能靠 host 复核，GPU 用宽松靓号预筛
+        if (p.suffixCount >= 2) return static_cast<int>(p.suffixCount);
         return 2;
     }
     if (!p.exactSuffix.empty()) return std::max(p.legacyMinLen, minLenHintForSuffix(p.exactSuffix));
     return p.legacyMinLen;
+}
+
+// GPU 内核 base58_tail 的 tc[0] = 地址最末字符。打包时把后缀反转，便于与 tc 直接 memcmp。
+// 仅支持「纯后缀」：模板 suffixCount>0 且 prefixCount==0，或 --suffix。
+// 返回 false 表示本批仍走 vanity 预筛（sufN 置 0）。
+inline bool buildGpuSuffixTable(const MatchParams& p, std::vector<unsigned char>* flat,
+                                unsigned* sufLen, unsigned* sufN) {
+    flat->clear();
+    *sufLen = 0;
+    *sufN = 0;
+
+    std::vector<std::string> rows;
+    if (p.templates && !p.templates->empty() && p.suffixCount > 0 && p.prefixCount == 0) {
+        const unsigned len = p.suffixCount;
+        if (len > 12) return false;  // 与内核 TAIL 对齐
+        rows.reserve(p.templates->size());
+        for (const auto& tmpl : *p.templates) {
+            if (tmpl.size() != kTronAddressLen) continue;
+            std::string rev(len, '\0');
+            for (unsigned i = 0; i < len; ++i)
+                rev[i] = tmpl[kTronAddressLen - 1 - i];
+            rows.push_back(std::move(rev));
+        }
+    } else if (!p.exactSuffix.empty() && p.prefixCount == 0 &&
+               (!p.templates || p.templates->empty())) {
+        const unsigned len = static_cast<unsigned>(p.exactSuffix.size());
+        if (len == 0 || len > 12) return false;
+        std::string rev(len, '\0');
+        for (unsigned i = 0; i < len; ++i)
+            rev[i] = p.exactSuffix[len - 1 - i];
+        rows.push_back(std::move(rev));
+    } else {
+        return false;
+    }
+
+    if (rows.empty()) return false;
+    std::sort(rows.begin(), rows.end());
+    rows.erase(std::unique(rows.begin(), rows.end()), rows.end());
+
+    const unsigned len = static_cast<unsigned>(rows[0].size());
+    flat->resize(static_cast<size_t>(rows.size()) * len);
+    for (size_t i = 0; i < rows.size(); ++i)
+        std::memcpy(flat->data() + i * len, rows[i].data(), len);
+    *sufLen = len;
+    *sufN = static_cast<unsigned>(rows.size());
+    return true;
 }
 
 inline bool loadMatchingInput(const std::string& pathOrLine, std::vector<std::string>* out,

@@ -1,3 +1,4 @@
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <cmath>
@@ -22,6 +23,7 @@
 
 #if defined(_WIN32)
 #  define WIN32_LEAN_AND_MEAN
+#  define NOMINMAX
 #  include <windows.h>
 #endif
 
@@ -330,6 +332,32 @@ int matchruletest() {
     } else {
         std::cout << "  OK   load single template\n";
     }
+
+    {
+        std::vector<std::string> tmpls = {
+            "Txxxxxxxxxxxxxxxxxxxxxxxxxxx888888",
+            "TxxxxxxxxxxxxxxxxxxxxxxxxxxxABCDEF",
+            "Txxxxxxxxxxxxxxxxxxxxxxxxxxx888888",  // dup
+        };
+        MatchParams mp;
+        mp.templates = &tmpls;
+        mp.suffixCount = 6;
+        mp.prefixCount = 0;
+        std::vector<unsigned char> flat;
+        unsigned sl = 0, sn = 0;
+        bool ok = buildGpuSuffixTable(mp, &flat, &sl, &sn) && sn == 2 && sl == 6 &&
+                  flat.size() == 12;
+        // tc 序：末字符在前 → "888888" → "888888"；"ABCDEF" → "FEDCBA"
+        bool orderOk = ok && flat[0] == '8' && flat[6] == 'F' && flat[11] == 'A';
+        std::cout << (orderOk ? "  OK   " : "  FAIL ") << "buildGpuSuffixTable unique/reverse\n";
+        if (!orderOk) ++fails;
+
+        mp.prefixCount = 2;
+        bool skip = !buildGpuSuffixTable(mp, &flat, &sl, &sn);
+        std::cout << (skip ? "  OK   " : "  FAIL ") << "buildGpuSuffixTable skip when prefix>0\n";
+        if (!skip) ++fails;
+    }
+
     std::cout << (fails ? std::to_string(fails) + " 个失败\n" : "MATCHRULETEST OK\n");
     return fails ? 1 : 0;
 }

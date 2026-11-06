@@ -12,6 +12,9 @@ tron_vanity_matches*.txt
 *.key
 *.pem
 
+# Token holder dumps (large / PII-adjacent; regenerate locally)
+Token_Holders_*.csv
+
 # Local config / secrets
 .env
 *.secret

@@ -26,6 +26,7 @@ constexpr uint32_t kBatch = 1u << 16;
 constexpr uint32_t kEcBits = 20;        // 固定基点标量乘覆盖的位数；> log2(kBatch) 也没问题，
                                         // 只是表里高位窗口永远用不到，不影响正确性
 constexpr uint32_t kOutCap = 8192;      // 单批命中回传上限
+constexpr size_t kMaxSufBytes = 256 * 1024;  // 后缀表上传上限（约 2 万条 × 12 字节）
 
 // 每个 work-item 连续处理多少私钥。UHD 730 上实测 N=1 最快（寄存器压力 + 每个私钥仍需一次
 // 模逆，未做 Montgomery 批量求逆）。保留可调，供不同 GPU 找甜点位。
@@ -108,13 +109,13 @@ public:
         return benchN(seconds, 20);
     }
 
-    // 完整流水线压测：secp256k1 + keccak + sha + base58 + 匹配 + 回传
+    // 完整流水线压测：secp256k1 + keccak + sha + base58 + 匹配 + 回传（vanity 路径）
     double benchN(double seconds, uint32_t minLen) {
         if (!ensureReady()) return 0.0;
         auto start = std::chrono::steady_clock::now();
         uint64_t done = 0;
         while (std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count() < seconds) {
-            if (!runBatch(minLen, nullptr, nullptr)) break;
+            if (!runBatch(minLen, 0, 0, nullptr, nullptr)) break;
             done += kBatch;
         }
         double el = std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
@@ -125,11 +126,33 @@ public:
         if (!ensureReady()) { std::cerr << "GPU 后端不可用: " << err_ << "\n"; return; }
         const MatchParams mp = matchParamsFromRunConfig(cfg);
         const uint32_t gpuMinLen = static_cast<uint32_t>(effectiveGpuMinLen(mp));
+
+        std::vector<unsigned char> sufFlat;
+        unsigned sufLen = 0, sufN = 0;
+        const bool useSufTab = buildGpuSuffixTable(mp, &sufFlat, &sufLen, &sufN);
+        if (useSufTab) {
+            if (sufFlat.size() > kMaxSufBytes) {
+                std::cerr << "GPU 后缀表过大 (" << sufFlat.size() << " > " << kMaxSufBytes << ")\n";
+                return;
+            }
+            if (!prog_.write(bufSuf_, sufFlat.size(), sufFlat.data())) {
+                std::cerr << "上传 GPU 后缀表失败\n";
+                return;
+            }
+            std::cout << "GPU 后缀表 : " << sufN << " 条 × " << sufLen
+                      << " 位（内核二分查找，host 仍精确复核）\n";
+        } else if (mp.templates && !mp.templates->empty() && mp.prefixCount > 0) {
+            std::cout << "GPU 提示 : 含 --prefix-count 时内核仍用靓号预筛，模板由 CPU 复核\n";
+        }
+
         while (!state.stop.load(std::memory_order_relaxed)) {
             if (cfg.maxAttempts && state.checked.load() >= cfg.maxAttempts) { state.stop = true; break; }
             std::vector<uint32_t> hits;
             unsigned char k0[32];
-            if (!runBatch(gpuMinLen, &hits, k0)) {
+            if (!runBatch(gpuMinLen,
+                          useSufTab ? sufN : 0u,
+                          useSufTab ? sufLen : 0u,
+                          &hits, k0)) {
                 std::cerr << "GPU 批次执行失败\n";
                 return;
             }
@@ -165,6 +188,7 @@ private:
     ocl::Program prog_;
     ocl::id kProbe_ = nullptr;
     ocl::id bufTable_ = nullptr, bufP0_ = nullptr, bufCount_ = nullptr, bufOutS_ = nullptr;
+    ocl::id bufSuf_ = nullptr;
     std::vector<unsigned char> table_;
     uint32_t builtKpi_ = 1;
     uint32_t builtEcw_ = 1;
@@ -192,14 +216,18 @@ private:
         bufP0_ = prog_.buffer(ocl::MEM_READ_ONLY, 64, nullptr, &err_);
         bufCount_ = prog_.buffer(ocl::MEM_READ_WRITE, 4, nullptr, &err_);
         bufOutS_ = prog_.buffer(ocl::MEM_WRITE_ONLY, kOutCap * 4, nullptr, &err_);
-        if (!bufTable_ || !bufP0_ || !bufCount_ || !bufOutS_) return false;
+        // 后缀表占位缓冲；suf_n==0 时内核不读内容，但仍需合法 cl_mem 作为参数。
+        bufSuf_ = prog_.buffer(ocl::MEM_READ_ONLY, kMaxSufBytes, nullptr, &err_);
+        if (!bufTable_ || !bufP0_ || !bufCount_ || !bufOutS_ || !bufSuf_) return false;
 
         ready_ = true;
         return true;
     }
 
     // 跑一批：随机基私钥 k0，扫描 k0+[0,kBatch)。命中的 s 写入 outHits（可空）。
-    bool runBatch(uint32_t minLen, std::vector<uint32_t>* outHits, unsigned char outK0[32]) {
+    // sufN==0：内置相同/升序靓号（minLen）；否则按已上传的后缀表二分查找。
+    bool runBatch(uint32_t minLen, uint32_t sufN, uint32_t sufLen,
+                  std::vector<uint32_t>* outHits, unsigned char outK0[32]) {
         unsigned char k0[32], p0[64];
         do {
             if (!randBytes(k0, 32)) return false;
@@ -215,10 +243,13 @@ private:
         if (!prog_.setArg(kProbe_, 0, sizeof(ocl::id), &bufP0_)) return false;
         prog_.setArg(kProbe_, 1, sizeof(ocl::id), &bufTable_);
         prog_.setArg(kProbe_, 2, sizeof(uint32_t), &minLen);
-        prog_.setArg(kProbe_, 3, sizeof(ocl::id), &bufCount_);
-        prog_.setArg(kProbe_, 4, sizeof(ocl::id), &bufOutS_);
+        prog_.setArg(kProbe_, 3, sizeof(ocl::id), &bufSuf_);
+        prog_.setArg(kProbe_, 4, sizeof(uint32_t), &sufN);
+        prog_.setArg(kProbe_, 5, sizeof(uint32_t), &sufLen);
+        prog_.setArg(kProbe_, 6, sizeof(ocl::id), &bufCount_);
+        prog_.setArg(kProbe_, 7, sizeof(ocl::id), &bufOutS_);
         uint32_t cap = kOutCap;
-        prog_.setArg(kProbe_, 5, sizeof(uint32_t), &cap);
+        prog_.setArg(kProbe_, 8, sizeof(uint32_t), &cap);
 
         if (!prog_.run1D(kProbe_, global, local, &err_)) return false;
         if (!prog_.finish()) return false;
