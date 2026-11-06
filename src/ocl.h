@@ -14,7 +14,7 @@ constexpr unsigned long long MEM_READ_WRITE = 1ull << 0;
 constexpr unsigned long long MEM_COPY_HOST_PTR = 1ull << 5;
 constexpr unsigned long long MEM_ALLOC_HOST_PTR = 1ull << 4;
 
-bool load(std::string* err);          // 加载 OpenCL.dll，解析符号
+bool load(std::string* err);          // 运行期加载 OpenCL（Win: OpenCL.dll / Linux: libOpenCL.so.1）
 bool loaded();
 
 struct DeviceInfo {

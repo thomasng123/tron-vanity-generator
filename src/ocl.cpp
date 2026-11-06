@@ -1,10 +1,13 @@
 #include "ocl.h"
 
 #include <cstring>
+#include <type_traits>
 
 #if defined(_WIN32)
 #  define WIN32_LEAN_AND_MEAN
 #  include <windows.h>
+#else
+#  include <dlfcn.h>
 #endif
 
 namespace ocl {
@@ -35,6 +38,40 @@ cl_int (*pReleaseMemObject)(id);
 
 bool g_loaded = false;
 
+#if !defined(_WIN32)
+void* g_oclLib = nullptr;
+#endif
+
+using ResolveFn = void* (*)(const char*);
+
+bool bindOpenCLSymbols(ResolveFn resolve, std::string* err) {
+    auto ld = [&](auto& fn, const char* name) -> bool {
+        fn = reinterpret_cast<std::remove_reference_t<decltype(fn)>>(resolve(name));
+        if (!fn) {
+            if (err) *err = std::string("OpenCL 缺少符号 ") + name;
+            return false;
+        }
+        return true;
+    };
+    return ld(pGetPlatformIDs, "clGetPlatformIDs") &&
+           ld(pGetPlatformInfo, "clGetPlatformInfo") &&
+           ld(pGetDeviceIDs, "clGetDeviceIDs") &&
+           ld(pGetDeviceInfo, "clGetDeviceInfo") &&
+           ld(pCreateContext, "clCreateContext") &&
+           ld(pCreateCommandQueue, "clCreateCommandQueue") &&
+           ld(pCreateProgramWithSource, "clCreateProgramWithSource") &&
+           ld(pBuildProgram, "clBuildProgram") &&
+           ld(pGetProgramBuildInfo, "clGetProgramBuildInfo") &&
+           ld(pCreateKernel, "clCreateKernel") &&
+           ld(pCreateBuffer, "clCreateBuffer") &&
+           ld(pSetKernelArg, "clSetKernelArg") &&
+           ld(pEnqueueNDRangeKernel, "clEnqueueNDRangeKernel") &&
+           ld(pEnqueueReadBuffer, "clEnqueueReadBuffer") &&
+           ld(pEnqueueWriteBuffer, "clEnqueueWriteBuffer") &&
+           ld(pFinish, "clFinish") &&
+           ld(pReleaseMemObject, "clReleaseMemObject");
+}
+
 constexpr cl_uint PLATFORM_NAME = 0x0902;
 constexpr cl_uint DEVICE_NAME = 0x102B;
 constexpr cl_uint DEVICE_VENDOR = 0x102C;
@@ -63,32 +100,26 @@ bool load(std::string* err) {
 #if defined(_WIN32)
     HMODULE lib = LoadLibraryA("OpenCL.dll");
     if (!lib) { if (err) *err = "未找到 OpenCL.dll（安装最新 Intel/AMD 显卡驱动）"; return false; }
-    auto G = [&](const char* n) { return reinterpret_cast<void*>(GetProcAddress(lib, n)); };
-    #define LD(var, name) *reinterpret_cast<void**>(&var) = G(name); if (!var) { if (err) *err = std::string("OpenCL.dll 缺少 ") + name; return false; }
-    LD(pGetPlatformIDs, "clGetPlatformIDs");
-    LD(pGetPlatformInfo, "clGetPlatformInfo");
-    LD(pGetDeviceIDs, "clGetDeviceIDs");
-    LD(pGetDeviceInfo, "clGetDeviceInfo");
-    LD(pCreateContext, "clCreateContext");
-    LD(pCreateCommandQueue, "clCreateCommandQueue");
-    LD(pCreateProgramWithSource, "clCreateProgramWithSource");
-    LD(pBuildProgram, "clBuildProgram");
-    LD(pGetProgramBuildInfo, "clGetProgramBuildInfo");
-    LD(pCreateKernel, "clCreateKernel");
-    LD(pCreateBuffer, "clCreateBuffer");
-    LD(pSetKernelArg, "clSetKernelArg");
-    LD(pEnqueueNDRangeKernel, "clEnqueueNDRangeKernel");
-    LD(pEnqueueReadBuffer, "clEnqueueReadBuffer");
-    LD(pEnqueueWriteBuffer, "clEnqueueWriteBuffer");
-    LD(pFinish, "clFinish");
-    LD(pReleaseMemObject, "clReleaseMemObject");
-    #undef LD
+    if (!bindOpenCLSymbols(
+            [&](const char* n) { return reinterpret_cast<void*>(GetProcAddress(lib, n)); }, err))
+        return false;
+#else
+    static const char* kLibs[] = {"libOpenCL.so.1", "libOpenCL.so", nullptr};
+    for (const char** p = kLibs; *p; ++p) {
+        g_oclLib = dlopen(*p, RTLD_LAZY | RTLD_LOCAL);
+        if (g_oclLib) break;
+    }
+    if (!g_oclLib) {
+        if (err) {
+            *err = "未找到 libOpenCL.so.1（Ubuntu: sudo apt install ocl-icd-opencl-dev，"
+                   "并安装对应 GPU 的 OpenCL ICD，如 nvidia-opencl-icd / intel-opencl-icd）";
+        }
+        return false;
+    }
+    if (!bindOpenCLSymbols([](const char* n) { return dlsym(g_oclLib, n); }, err)) return false;
+#endif
     g_loaded = true;
     return true;
-#else
-    if (err) *err = "仅支持 Windows";
-    return false;
-#endif
 }
 
 std::vector<DeviceInfo> enumerateGpus() {

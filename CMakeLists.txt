@@ -17,6 +17,9 @@ endif()
 if(STATIC_RUNTIME)
   if(MSVC)
     set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+  elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    # Linux 不做全静态链接（glibc / dlopen）；仅静态 libgcc/libstdc++ 便于拷贝二进制
+    add_link_options(-static-libgcc -static-libstdc++)
   else()
     add_link_options(-static -static-libgcc -static-libstdc++)
   endif()
@@ -57,6 +60,9 @@ target_link_libraries(tron_vanity_generator PRIVATE secp256k1)
 
 find_package(Threads REQUIRED)
 target_link_libraries(tron_vanity_generator PRIVATE Threads::Threads)
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+  target_link_libraries(tron_vanity_generator PRIVATE dl)
+endif()
 
 if(MSVC)
   target_compile_options(tron_vanity_generator PRIVATE /EHsc /utf-8

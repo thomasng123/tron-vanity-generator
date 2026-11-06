@@ -1,6 +1,6 @@
 # TRON Vanity Generator
 
-High-performance TRON (TRX) vanity address generator for Windows.
+High-performance TRON (TRX) vanity address generator for Windows and Linux.
 
 - CPU multi-threaded generation (libsecp256k1)
 - Intel / AMD **OpenCL GPU** backend — secp256k1 + Keccak-256 + SHA-256 + Base58 + suffix matching all in-kernel
@@ -41,6 +41,27 @@ CPU + Intel/AMD 集成显卡自动检测、按算力自动选择后端，Windows
     `xyzab`（`z→a` 回绕）、`9abcd`（数字跨到字母）、`FGHJ`（跳过 base58 里没有的 `I`）
 
 `N` 由 `--min` 指定，默认 5。位数更多的匹配优先记录。`--matchtest` 可自检规则。
+
+## 构建（Linux，Ubuntu 24.04 等）
+
+依赖：
+
+```bash
+sudo apt install build-essential cmake git
+# GPU 可选：OpenCL 加载器 + 对应厂商 ICD
+sudo apt install ocl-icd-opencl-dev
+# 例：NVIDIA 独显 → nvidia-opencl-icd-xxx ；Intel → intel-opencl-icd
+```
+
+```bash
+git clone --recurse-submodules https://github.com/hlzzhqb/tron-vanity-generator.git
+cd tron-vanity-generator
+./build.sh
+# 产物: build/tron_vanity_generator
+```
+
+随机数用 `/dev/urandom`。OpenCL 运行期 `dlopen("libOpenCL.so.1")`，与 Windows 一样无需 OpenCL SDK。
+无 GPU 或未装 ICD 时 `--backend auto` 会自动用 CPU。
 
 ## 构建（Windows，Visual Studio / Build Tools）
 
